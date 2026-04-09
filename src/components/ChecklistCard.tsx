@@ -1,13 +1,14 @@
-import { CheckCircle2, Circle } from "lucide-react";
+import { CheckCircle2, Circle, Trash2 } from "lucide-react";
 import type { CheckItem } from "@/pages/Index";
 
 interface Props {
   item: CheckItem;
   onToggle: (id: string) => void;
   onMemoChange: (id: string, memo: string) => void;
+  onDelete: (id: string) => void;
 }
 
-const ChecklistCard = ({ item, onToggle, onMemoChange }: Props) => (
+const ChecklistCard = ({ item, onToggle, onMemoChange, onDelete }: Props) => (
   <div
     className={`bg-card border rounded-lg p-4 transition-all duration-200 ${
       item.checked ? "border-success/40" : "border-border"
@@ -26,13 +27,22 @@ const ChecklistCard = ({ item, onToggle, onMemoChange }: Props) => (
         )}
       </button>
       <div className="flex-1 space-y-2">
-        <span
-          className={`text-sm font-medium transition-colors ${
-            item.checked ? "text-muted-foreground line-through" : "text-foreground"
-          }`}
-        >
-          {item.title}
-        </span>
+        <div className="flex items-center justify-between">
+          <span
+            className={`text-sm font-medium transition-colors ${
+              item.checked ? "text-muted-foreground line-through" : "text-foreground"
+            }`}
+          >
+            {item.title}
+          </span>
+          <button
+            onClick={() => onDelete(item.id)}
+            className="shrink-0 p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+            aria-label="항목 삭제"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        </div>
         <input
           type="text"
           placeholder="메모 입력..."

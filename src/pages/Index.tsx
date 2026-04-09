@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useCallback } from "react";
 import { ClipboardCheck } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
@@ -6,6 +6,7 @@ import ChecklistCard from "@/components/ChecklistCard";
 import ProgressHeader from "@/components/ProgressHeader";
 import FilterTabs from "@/components/FilterTabs";
 import CategoryTabs from "@/components/CategoryTabs";
+import AddItemForm from "@/components/AddItemForm";
 
 export interface CheckItem {
   id: string;
@@ -22,6 +23,7 @@ const Index = () => {
   const [filter, setFilter] = useState<Filter>("전체");
   const [activeCategory, setActiveCategory] = useState<string>("월간 점검");
   const queryClient = useQueryClient();
+  const memoTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const { data: items = [], isLoading } = useQuery({
     queryKey: ["checklist_items"],
@@ -54,13 +56,54 @@ const Index = () => {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["checklist_items"] }),
   });
 
+  const insertMutation = useMutation({
+    mutationFn: async ({ title, category }: { title: string; category: string }) => {
+      const { error } = await supabase.from("checklist_items").insert({ title, category });
+      if (error) throw error;
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["checklist_items"] }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("checklist_items").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: ["checklist_items"] });
+      const prev = queryClient.getQueryData<CheckItem[]>(["checklist_items"]);
+      queryClient.setQueryData<CheckItem[]>(["checklist_items"], (old) => old?.filter((item) => item.id !== id));
+      return { prev };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.prev) queryClient.setQueryData(["checklist_items"], context.prev);
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["checklist_items"] }),
+  });
+
   const toggleCheck = (id: string) => {
     const item = items.find((i) => i.id === id);
     if (item) updateMutation.mutate({ id, updates: { checked: !item.checked } });
   };
 
-  const updateMemo = (id: string, memo: string) => {
-    updateMutation.mutate({ id, updates: { memo } });
+  const updateMemo = useCallback((id: string, memo: string) => {
+    // Optimistic local update immediately
+    queryClient.setQueryData<CheckItem[]>(["checklist_items"], (old) =>
+      old?.map((item) => (item.id === id ? { ...item, memo } : item))
+    );
+    // Debounce DB save
+    if (memoTimers.current[id]) clearTimeout(memoTimers.current[id]);
+    memoTimers.current[id] = setTimeout(() => {
+      updateMutation.mutate({ id, updates: { memo } });
+    }, 500);
+  }, [queryClient, updateMutation]);
+
+  const handleAdd = (title: string, category: string) => {
+    insertMutation.mutate({ title, category });
+  };
+
+  const handleDelete = (id: string) => {
+    deleteMutation.mutate(id);
   };
 
   const categoryItems = items.filter((i) => i.category === activeCategory);
@@ -101,13 +144,21 @@ const Index = () => {
 
         <div className="space-y-3">
           {filtered.map((item) => (
-            <ChecklistCard key={item.id} item={item} onToggle={toggleCheck} onMemoChange={updateMemo} />
+            <ChecklistCard
+              key={item.id}
+              item={item}
+              onToggle={toggleCheck}
+              onMemoChange={updateMemo}
+              onDelete={handleDelete}
+            />
           ))}
         </div>
 
         {filtered.length === 0 && (
           <div className="text-center py-12 text-muted-foreground">해당하는 항목이 없습니다.</div>
         )}
+
+        <AddItemForm categories={[...categories]} onAdd={handleAdd} />
       </div>
     </div>
   );
