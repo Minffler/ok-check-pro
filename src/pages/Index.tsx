@@ -1,12 +1,15 @@
-import { useState, useMemo, useRef, useCallback } from "react";
+import { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import { ClipboardCheck } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
 import ChecklistCard from "@/components/ChecklistCard";
 import ProgressHeader from "@/components/ProgressHeader";
 import FilterTabs from "@/components/FilterTabs";
 import CategoryTabs from "@/components/CategoryTabs";
 import AddItemForm from "@/components/AddItemForm";
+import UserHeader from "@/components/UserHeader";
+import LoginPage from "@/components/LoginPage";
 
 export interface CheckItem {
   id: string;
@@ -17,9 +20,19 @@ export interface CheckItem {
 }
 
 const categories = ["월간 점검", "분기 점검"] as const;
+const defaultItems = [
+  { title: "고객정보 접근권한 확인", category: "월간 점검" },
+  { title: "비밀번호 변경 여부", category: "월간 점검" },
+  { title: "문서 보관 상태", category: "월간 점검" },
+  { title: "시스템 로그 점검", category: "분기 점검" },
+  { title: "외부감사 자료 준비", category: "분기 점검" },
+  { title: "규정 변경사항 반영", category: "분기 점검" },
+];
+
 type Filter = "전체" | "완료" | "미완료";
 
 const Index = () => {
+  const { user, loading: authLoading } = useAuth();
   const [filter, setFilter] = useState<Filter>("전체");
   const [activeCategory, setActiveCategory] = useState<string>("월간 점검");
   const queryClient = useQueryClient();
@@ -35,7 +48,25 @@ const Index = () => {
       if (error) throw error;
       return data as CheckItem[];
     },
+    enabled: !!user,
   });
+
+  // Seed default items for new users
+  const seedMutation = useMutation({
+    mutationFn: async (userId: string) => {
+      const { error } = await supabase.from("checklist_items").insert(
+        defaultItems.map((item) => ({ ...item, user_id: userId }))
+      );
+      if (error) throw error;
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["checklist_items"] }),
+  });
+
+  useEffect(() => {
+    if (user && !isLoading && items.length === 0 && !seedMutation.isPending) {
+      seedMutation.mutate(user.id);
+    }
+  }, [user, isLoading, items.length]);
 
   const updateMutation = useMutation({
     mutationFn: async ({ id, updates }: { id: string; updates: Partial<Pick<CheckItem, "checked" | "memo">> }) => {
@@ -58,7 +89,8 @@ const Index = () => {
 
   const insertMutation = useMutation({
     mutationFn: async ({ title, category }: { title: string; category: string }) => {
-      const { error } = await supabase.from("checklist_items").insert({ title, category });
+      if (!user) throw new Error("Not authenticated");
+      const { error } = await supabase.from("checklist_items").insert({ title, category, user_id: user.id });
       if (error) throw error;
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["checklist_items"] }),
@@ -87,11 +119,9 @@ const Index = () => {
   };
 
   const updateMemo = useCallback((id: string, memo: string) => {
-    // Optimistic local update immediately
     queryClient.setQueryData<CheckItem[]>(["checklist_items"], (old) =>
       old?.map((item) => (item.id === id ? { ...item, memo } : item))
     );
-    // Debounce DB save
     if (memoTimers.current[id]) clearTimeout(memoTimers.current[id]);
     memoTimers.current[id] = setTimeout(() => {
       updateMutation.mutate({ id, updates: { memo } });
@@ -106,23 +136,27 @@ const Index = () => {
     deleteMutation.mutate(id);
   };
 
-  const categoryItems = items.filter((i) => i.category === activeCategory);
-  const total = categoryItems.length;
-  const completed = categoryItems.filter((i) => i.checked).length;
-
-  const filtered = useMemo(() => {
-    if (filter === "완료") return categoryItems.filter((i) => i.checked);
-    if (filter === "미완료") return categoryItems.filter((i) => !i.checked);
-    return categoryItems;
-  }, [categoryItems, filter]);
-
-  if (isLoading) {
+  if (authLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <p className="text-muted-foreground">불러오는 중...</p>
       </div>
     );
   }
+
+  if (!user) {
+    return <LoginPage />;
+  }
+
+  const categoryItems = items.filter((i) => i.category === activeCategory);
+  const total = categoryItems.length;
+  const completed = categoryItems.filter((i) => i.checked).length;
+
+  const filtered = (() => {
+    if (filter === "완료") return categoryItems.filter((i) => i.checked);
+    if (filter === "미완료") return categoryItems.filter((i) => !i.checked);
+    return categoryItems;
+  })();
 
   return (
     <div className="min-h-screen bg-background">
@@ -131,6 +165,8 @@ const Index = () => {
           <ClipboardCheck className="h-7 w-7 text-primary" />
           <h1 className="text-2xl font-bold text-foreground">OK금융 업무 점검</h1>
         </div>
+
+        <UserHeader />
 
         <CategoryTabs
           categories={[...categories]}
@@ -154,7 +190,7 @@ const Index = () => {
           ))}
         </div>
 
-        {filtered.length === 0 && (
+        {filtered.length === 0 && !isLoading && (
           <div className="text-center py-12 text-muted-foreground">해당하는 항목이 없습니다.</div>
         )}
 
