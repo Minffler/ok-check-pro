@@ -1,5 +1,7 @@
 import { useState, useMemo } from "react";
 import { ClipboardCheck } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { supabase } from "@/integrations/supabase/client";
 import ChecklistCard from "@/components/ChecklistCard";
 import ProgressHeader from "@/components/ProgressHeader";
 import FilterTabs from "@/components/FilterTabs";
@@ -13,29 +15,52 @@ export interface CheckItem {
   memo: string;
 }
 
-const initialItems: CheckItem[] = [
-  { id: "1", category: "월간 점검", title: "고객정보 접근권한 확인", checked: false, memo: "" },
-  { id: "2", category: "월간 점검", title: "비밀번호 변경 여부", checked: false, memo: "" },
-  { id: "3", category: "월간 점검", title: "문서 보관 상태", checked: false, memo: "" },
-  { id: "4", category: "분기 점검", title: "시스템 로그 점검", checked: false, memo: "" },
-  { id: "5", category: "분기 점검", title: "외부감사 자료 준비", checked: false, memo: "" },
-  { id: "6", category: "분기 점검", title: "규정 변경사항 반영", checked: false, memo: "" },
-];
-
 const categories = ["월간 점검", "분기 점검"] as const;
 type Filter = "전체" | "완료" | "미완료";
 
 const Index = () => {
-  const [items, setItems] = useState<CheckItem[]>(initialItems);
   const [filter, setFilter] = useState<Filter>("전체");
   const [activeCategory, setActiveCategory] = useState<string>("월간 점검");
+  const queryClient = useQueryClient();
+
+  const { data: items = [], isLoading } = useQuery({
+    queryKey: ["checklist_items"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("checklist_items")
+        .select("id, title, category, checked, memo")
+        .order("created_at");
+      if (error) throw error;
+      return data as CheckItem[];
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async ({ id, updates }: { id: string; updates: Partial<Pick<CheckItem, "checked" | "memo">> }) => {
+      const { error } = await supabase.from("checklist_items").update(updates).eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async ({ id, updates }) => {
+      await queryClient.cancelQueries({ queryKey: ["checklist_items"] });
+      const prev = queryClient.getQueryData<CheckItem[]>(["checklist_items"]);
+      queryClient.setQueryData<CheckItem[]>(["checklist_items"], (old) =>
+        old?.map((item) => (item.id === id ? { ...item, ...updates } : item))
+      );
+      return { prev };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.prev) queryClient.setQueryData(["checklist_items"], context.prev);
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["checklist_items"] }),
+  });
 
   const toggleCheck = (id: string) => {
-    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, checked: !item.checked } : item)));
+    const item = items.find((i) => i.id === id);
+    if (item) updateMutation.mutate({ id, updates: { checked: !item.checked } });
   };
 
   const updateMemo = (id: string, memo: string) => {
-    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, memo } : item)));
+    updateMutation.mutate({ id, updates: { memo } });
   };
 
   const categoryItems = items.filter((i) => i.category === activeCategory);
@@ -47,6 +72,14 @@ const Index = () => {
     if (filter === "미완료") return categoryItems.filter((i) => !i.checked);
     return categoryItems;
   }, [categoryItems, filter]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <p className="text-muted-foreground">불러오는 중...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
